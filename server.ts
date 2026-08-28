@@ -30,6 +30,16 @@ export const rpcContract = defineRpcContract({
       generatedAt: z.number(),
     }),
   },
+  dismiss: {
+    input: z
+      .object({
+        threadId: z.string(),
+        kind: z.enum(["error", "interaction", "unread"]),
+        attentionAt: z.number().int().nonnegative(),
+      })
+      .strict(),
+    output: z.object({ dismissed: z.boolean() }).strict(),
+  },
 });
 
 type ThreadDto = Awaited<ReturnType<BbPluginApi["sdk"]["threads"]["list"]>>[number];
@@ -58,6 +68,12 @@ function interactionMeta(interaction: Interaction): {
   if (payload.kind === "plugin") {
     return { label: "Awaiting your input", detail: payload.title };
   }
+  if (!("subject" in payload)) {
+    return {
+      label: "Awaiting your input",
+      detail: "title" in payload ? payload.title : undefined,
+    };
+  }
   // provider approval
   const subject = payload.subject;
   if (subject.kind === "plan") {
@@ -74,13 +90,19 @@ function interactionMeta(interaction: Interaction): {
   }
   return {
     label: "Needs approval",
-    detail: subject.toolName ?? undefined,
+    detail:
+      "toolName" in subject
+        ? subject.toolName ?? undefined
+        : "tool" in subject
+          ? subject.tool
+          : undefined,
   };
 }
 
 async function buildSnapshot(
   bb: BbPluginApi,
   projectId: string | null,
+  isDismissed: (item: AttentionItem) => boolean = () => false,
 ): Promise<z.output<(typeof rpcContract)["attention"]["output"]>> {
   const threads = await bb.sdk.threads.list({
     projectId: projectId ?? undefined,
@@ -128,7 +150,7 @@ async function buildSnapshot(
 
     if (kind === null) continue;
 
-    items.push({
+    const item: AttentionItem = {
       threadId: thread.id,
       projectId: thread.projectId,
       title: threadTitle(thread),
@@ -137,7 +159,8 @@ async function buildSnapshot(
       ...(detail ? { detail } : {}),
       attentionAt: thread.latestAttentionAt,
       updatedAt: thread.updatedAt,
-    });
+    };
+    if (!isDismissed(item)) items.push(item);
   }
 
   items.sort(
@@ -155,8 +178,61 @@ async function buildSnapshot(
 export default async function plugin(bb: BbPluginApi) {
   bb.log.info("loaded");
 
+  const settings = bb.settings.define({
+    permanentDismissalsEnabled: {
+      type: "boolean",
+      label: "Permanent dismissals",
+      default: false,
+    },
+  });
+  const database = bb.storage.database();
+  bb.storage.migrate(database, [
+    `CREATE TABLE IF NOT EXISTS dismissed_attention (
+      thread_id TEXT NOT NULL,
+      kind TEXT NOT NULL,
+      attention_at INTEGER NOT NULL,
+      dismissed_at INTEGER NOT NULL,
+      PRIMARY KEY (thread_id, kind)
+    )`,
+  ]);
+  const findDismissal = database.prepare(
+    `SELECT attention_at AS attentionAt
+     FROM dismissed_attention
+     WHERE thread_id = ? AND kind = ?`,
+  );
+  const saveDismissal = database.prepare(
+    `INSERT INTO dismissed_attention (thread_id, kind, attention_at, dismissed_at)
+     VALUES (?, ?, ?, ?)
+     ON CONFLICT(thread_id, kind) DO UPDATE SET
+       attention_at = excluded.attention_at,
+       dismissed_at = excluded.dismissed_at`,
+  );
+
+  const getSnapshot = async (projectId: string | null) => {
+    const { permanentDismissalsEnabled } = await settings.get();
+    return buildSnapshot(
+      bb,
+      projectId,
+      permanentDismissalsEnabled
+        ? (item) => {
+            const row = findDismissal.get(item.threadId, item.kind) as
+              | { attentionAt: number }
+              | undefined;
+            return row?.attentionAt === item.attentionAt;
+          }
+        : undefined,
+    );
+  };
+
   bb.rpc.register(rpcContract, {
-    attention: ({ projectId }) => buildSnapshot(bb, projectId),
+    attention: ({ projectId }) => getSnapshot(projectId),
+    dismiss: async ({ threadId, kind, attentionAt }) => {
+      const { permanentDismissalsEnabled } = await settings.get();
+      if (!permanentDismissalsEnabled) return { dismissed: false };
+      saveDismissal.run(threadId, kind, attentionAt, Date.now());
+      bb.realtime.publish("attention-changed", { threadId });
+      return { dismissed: true };
+    },
   });
 
   // Tell open homepages to refetch when a thread finishes or fails, so the
@@ -219,7 +295,7 @@ export default async function plugin(bb: BbPluginApi) {
       const projectId = projectFlag
         ? projectFlag.replace(/^--project=?(\s*)/, "") || null
         : null;
-      const snapshot = await buildSnapshot(bb, projectId);
+      const snapshot = await getSnapshot(projectId);
 
       if (snapshot.items.length === 0) {
         return { exitCode: 0, stdout: "Nothing needs your attention." };

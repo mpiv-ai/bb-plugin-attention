@@ -69,6 +69,41 @@ const pendingInteraction = (threadId: string) => ({
 });
 
 describe("attention snapshot", () => {
+  it("leaves attention visible while permanent dismissals are disabled", async () => {
+    const failed = listThread({
+      id: "t_error",
+      title: "Broken thread",
+      titleFallback: null,
+      status: "error",
+      runtime: { displayStatus: "error", hostReconnectGraceExpiresAt: null },
+      latestAttentionAt: 5_000,
+    });
+    const { bb, harness } = createFakePluginHost({
+      pluginId: "attention",
+      sdk: {
+        threads: {
+          list: async () => [failed],
+          interactions: { list: async () => [] },
+        },
+      },
+    });
+    await plugin(bb);
+
+    expect(
+      await harness.behavior.callRpc("dismiss", {
+        threadId: failed.id,
+        kind: "error",
+        attentionAt: 5_000,
+      }),
+    ).toEqual({ dismissed: false });
+    const snapshot = (await harness.behavior.callRpc("attention", {
+      projectId: null,
+    })) as { items: Array<{ threadId: string }> };
+    expect(snapshot.items).toEqual([
+      expect.objectContaining({ threadId: failed.id }),
+    ]);
+  });
+
   it("ranks error > interaction > unread, excludes hidden/archived/active", async () => {
     const failed = listThread({
       id: "t_error",
@@ -225,6 +260,57 @@ describe("attention snapshot", () => {
         kind: "interaction",
         detail: "Ship it now or wait for review?",
       }),
+    ]);
+  });
+
+  it("keeps a dismissed occurrence hidden across reloads and shows a later occurrence", async () => {
+    const failed = listThread({
+      id: "t_error",
+      title: "Broken thread",
+      titleFallback: null,
+      status: "error",
+      runtime: { displayStatus: "error", hostReconnectGraceExpiresAt: null },
+      latestAttentionAt: 5_000,
+    });
+    const unread = listThread({
+      id: "t_unread",
+      title: "Finished thread",
+      titleFallback: null,
+      latestAttentionAt: 4_000,
+    });
+    const { bb, harness } = createFakePluginHost({
+      pluginId: "attention",
+      settings: { permanentDismissalsEnabled: true },
+      sdk: {
+        threads: {
+          list: async () => [failed, unread],
+          interactions: { list: async () => [] },
+        },
+      },
+    });
+    await plugin(bb);
+
+    await harness.behavior.callRpc("dismiss", {
+      threadId: failed.id,
+      kind: "error",
+      attentionAt: 5_000,
+    });
+    const reloaded = await harness.lifecycle.reload(plugin);
+
+    const dismissed = (await reloaded.harness.behavior.callRpc("attention", {
+      projectId: null,
+    })) as { items: Array<{ threadId: string }> };
+    expect(dismissed.items).toEqual([
+      expect.objectContaining({ threadId: unread.id }),
+    ]);
+
+    failed.latestAttentionAt = 6_000;
+    const laterOccurrence = (await reloaded.harness.behavior.callRpc("attention", {
+      projectId: null,
+    })) as { items: Array<{ threadId: string }> };
+    expect(laterOccurrence.items).toEqual([
+      expect.objectContaining({ threadId: failed.id }),
+      expect.objectContaining({ threadId: unread.id }),
     ]);
   });
 
