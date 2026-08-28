@@ -14546,6 +14546,14 @@ var rpcContract = defineRpcContract({
       total: external_exports.number().int(),
       generatedAt: external_exports.number()
     })
+  },
+  dismiss: {
+    input: external_exports.object({
+      threadId: external_exports.string(),
+      kind: external_exports.enum(["error", "interaction", "unread"]),
+      attentionAt: external_exports.number().int().nonnegative()
+    }).strict(),
+    output: external_exports.object({ dismissed: external_exports.boolean() }).strict()
   }
 });
 var MAX_ITEMS = 10;
@@ -14562,6 +14570,12 @@ function interactionMeta(interaction) {
   if (payload.kind === "plugin") {
     return { label: "Awaiting your input", detail: payload.title };
   }
+  if (!("subject" in payload)) {
+    return {
+      label: "Awaiting your input",
+      detail: "title" in payload ? payload.title : void 0
+    };
+  }
   const subject = payload.subject;
   if (subject.kind === "plan") {
     return {
@@ -14577,10 +14591,10 @@ function interactionMeta(interaction) {
   }
   return {
     label: "Needs approval",
-    detail: subject.toolName ?? void 0
+    detail: "toolName" in subject ? subject.toolName ?? void 0 : "tool" in subject ? subject.tool : void 0
   };
 }
-async function buildSnapshot(bb, projectId) {
+async function buildSnapshot(bb, projectId, isDismissed = () => false) {
   const threads = await bb.sdk.threads.list({
     projectId: projectId ?? void 0,
     archived: false,
@@ -14600,7 +14614,7 @@ async function buildSnapshot(bb, projectId) {
       try {
         const pending = (await bb.sdk.threads.interactions.list({
           threadId: thread.id
-        })).find((item) => item.status === "pending");
+        })).find((item2) => item2.status === "pending");
         if (pending) {
           kind = "interaction";
           const meta3 = interactionMeta(pending);
@@ -14617,7 +14631,7 @@ async function buildSnapshot(bb, projectId) {
       label = "Turn finished \u2014 reply needed";
     }
     if (kind === null) continue;
-    items.push({
+    const item = {
       threadId: thread.id,
       projectId: thread.projectId,
       title: threadTitle(thread),
@@ -14626,7 +14640,8 @@ async function buildSnapshot(bb, projectId) {
       ...detail ? { detail } : {},
       attentionAt: thread.latestAttentionAt,
       updatedAt: thread.updatedAt
-    });
+    };
+    if (!isDismissed(item)) items.push(item);
   }
   items.sort(
     (a, b) => RANK[a.kind] - RANK[b.kind] || b.attentionAt - a.attentionAt
@@ -14639,8 +14654,55 @@ async function buildSnapshot(bb, projectId) {
 }
 async function plugin(bb) {
   bb.log.info("loaded");
+  const settings = bb.settings.define({
+    permanentDismissalsEnabled: {
+      type: "boolean",
+      label: "Permanent dismissals",
+      default: false
+    }
+  });
+  const database = bb.storage.database();
+  bb.storage.migrate(database, [
+    `CREATE TABLE IF NOT EXISTS dismissed_attention (
+      thread_id TEXT NOT NULL,
+      kind TEXT NOT NULL,
+      attention_at INTEGER NOT NULL,
+      dismissed_at INTEGER NOT NULL,
+      PRIMARY KEY (thread_id, kind)
+    )`
+  ]);
+  const findDismissal = database.prepare(
+    `SELECT attention_at AS attentionAt
+     FROM dismissed_attention
+     WHERE thread_id = ? AND kind = ?`
+  );
+  const saveDismissal = database.prepare(
+    `INSERT INTO dismissed_attention (thread_id, kind, attention_at, dismissed_at)
+     VALUES (?, ?, ?, ?)
+     ON CONFLICT(thread_id, kind) DO UPDATE SET
+       attention_at = excluded.attention_at,
+       dismissed_at = excluded.dismissed_at`
+  );
+  const getSnapshot = async (projectId) => {
+    const { permanentDismissalsEnabled } = await settings.get();
+    return buildSnapshot(
+      bb,
+      projectId,
+      permanentDismissalsEnabled ? (item) => {
+        const row = findDismissal.get(item.threadId, item.kind);
+        return row?.attentionAt === item.attentionAt;
+      } : void 0
+    );
+  };
   bb.rpc.register(rpcContract, {
-    attention: ({ projectId }) => buildSnapshot(bb, projectId)
+    attention: ({ projectId }) => getSnapshot(projectId),
+    dismiss: async ({ threadId, kind, attentionAt }) => {
+      const { permanentDismissalsEnabled } = await settings.get();
+      if (!permanentDismissalsEnabled) return { dismissed: false };
+      saveDismissal.run(threadId, kind, attentionAt, Date.now());
+      bb.realtime.publish("attention-changed", { threadId });
+      return { dismissed: true };
+    }
   });
   const changed = (payload) => {
     bb.realtime.publish("attention-changed", {
@@ -14688,7 +14750,7 @@ async function plugin(bb) {
     async run(argv) {
       const projectFlag = argv.find((arg) => arg.startsWith("--project"));
       const projectId = projectFlag ? projectFlag.replace(/^--project=?(\s*)/, "") || null : null;
-      const snapshot = await buildSnapshot(bb, projectId);
+      const snapshot = await getSnapshot(projectId);
       if (snapshot.items.length === 0) {
         return { exitCode: 0, stdout: "Nothing needs your attention." };
       }

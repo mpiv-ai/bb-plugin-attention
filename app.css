@@ -23,15 +23,10 @@
 .attention-row {
   display: flex;
   align-items: center;
-  gap: 0.75rem;
   width: 100%;
-  padding: 0.625rem 1rem; /* py-2.5 px-4, matching native row density */
-  text-align: left;
-  border: 0;
   border-top: 1px solid var(--color-border, #334155);
   background: transparent;
   color: var(--color-foreground, #e2e8f0);
-  cursor: pointer;
 }
 
 .attention-row:first-child {
@@ -40,6 +35,38 @@
 
 .attention-row:hover {
   background: var(--color-accent, rgba(148, 163, 184, 0.1));
+}
+
+.attention-row-open {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  flex: 1;
+  min-width: 0;
+  padding: 0.625rem 1rem;
+  text-align: left;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+}
+
+.attention-dismiss {
+  flex-shrink: 0;
+  margin-right: 0.75rem;
+  padding: 0.25rem 0.5rem;
+  border: 0;
+  border-radius: 0.25rem;
+  background: transparent;
+  color: var(--color-muted-foreground, #94a3b8);
+  font-size: 0.75rem;
+  cursor: pointer;
+}
+
+.attention-dismiss:hover,
+.attention-dismiss:focus-visible {
+  background: var(--color-muted, #334155);
+  color: var(--color-foreground, #e2e8f0);
 }
 
 .attention-badge {

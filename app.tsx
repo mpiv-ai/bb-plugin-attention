@@ -10,6 +10,7 @@ import {
   useBbNavigate,
   useRealtime,
   useRpc,
+  useSettings,
 } from "@get-bb/plugin-sdk/app";
 import type { rpcContract } from "./server";
 import "./app.css";
@@ -47,38 +48,55 @@ const KIND_LABEL: Record<AttentionItem["kind"], string> = {
 function AttentionRow({
   item,
   onOpen,
+  onDismiss,
 }: {
   item: AttentionItem;
   onOpen: (threadId: string) => void;
+  onDismiss?: (item: AttentionItem) => void;
 }) {
   return (
-    <button
-      type="button"
-      className="attention-row"
-      onClick={() => onOpen(item.threadId)}
-    >
-      <span className={`attention-badge attention-badge-${item.kind}`}>
-        {KIND_LABEL[item.kind]}
-      </span>
-      <span className="attention-row-body">
-        <span className="attention-row-title">{item.title}</span>
-        {item.detail ? (
-          <span className="attention-row-detail">{item.detail}</span>
-        ) : null}
-      </span>
-      <span className="attention-row-meta" title={item.label}>
-        <span className="attention-row-label">{item.label}</span>
-        <span className="attention-row-time">
-          {relativeTime(item.attentionAt)}
+    <div className="attention-row">
+      <button
+        type="button"
+        className="attention-row-open"
+        aria-label={`Open ${item.title}`}
+        onClick={() => onOpen(item.threadId)}
+      >
+        <span className={`attention-badge attention-badge-${item.kind}`}>
+          {KIND_LABEL[item.kind]}
         </span>
-      </span>
-    </button>
+        <span className="attention-row-body">
+          <span className="attention-row-title">{item.title}</span>
+          {item.detail ? (
+            <span className="attention-row-detail">{item.detail}</span>
+          ) : null}
+        </span>
+        <span className="attention-row-meta" title={item.label}>
+          <span className="attention-row-label">{item.label}</span>
+          <span className="attention-row-time">
+            {relativeTime(item.attentionAt)}
+          </span>
+        </span>
+      </button>
+      {onDismiss ? (
+        <button
+          type="button"
+          className="attention-dismiss"
+          aria-label={`Dismiss ${item.title}`}
+          title="Dismiss this occurrence"
+          onClick={() => onDismiss(item)}
+        >
+          Dismiss
+        </button>
+      ) : null}
+    </div>
   );
 }
 
 function AttentionHome({ projectId }: { projectId: string | null }) {
   const rpc = useRpc<Contract>();
   const navigate = useBbNavigate();
+  const { values: settings } = useSettings();
   const [items, setItems] = useState<AttentionItem[] | null>(null);
   const [total, setTotal] = useState(0);
   const [error, setError] = useState<string | null>(null);
@@ -101,6 +119,34 @@ function AttentionHome({ projectId }: { projectId: string | null }) {
     (threadId: string) => navigate.toThread(threadId),
     [navigate],
   );
+  const dismiss = useCallback(
+    (item: AttentionItem) => {
+      setError(null);
+      void rpc
+        .call("dismiss", {
+          threadId: item.threadId,
+          kind: item.kind,
+          attentionAt: item.attentionAt,
+        })
+        .then(({ dismissed }) => {
+          if (!dismissed) {
+            setError("Permanent dismissals are disabled");
+            return;
+          }
+          setItems((current) =>
+            current?.filter(
+              (candidate) =>
+                candidate.threadId !== item.threadId ||
+                candidate.kind !== item.kind ||
+                candidate.attentionAt !== item.attentionAt,
+            ) ?? null,
+          );
+          setTotal((current) => Math.max(0, current - 1));
+        })
+        .catch(() => setError("Could not dismiss attention item"));
+    },
+    [rpc],
+  );
 
   const shownTotal = items === null ? 0 : total;
   const footer = useMemo(() => {
@@ -121,7 +167,16 @@ function AttentionHome({ projectId }: { projectId: string | null }) {
       ) : (
         <div className="attention-list">
           {items.map((item) => (
-            <AttentionRow key={item.threadId} item={item} onOpen={open} />
+            <AttentionRow
+              key={`${item.threadId}:${item.kind}:${item.attentionAt}`}
+              item={item}
+              onOpen={open}
+              onDismiss={
+                settings?.permanentDismissalsEnabled === true
+                  ? dismiss
+                  : undefined
+              }
+            />
           ))}
         </div>
       )}

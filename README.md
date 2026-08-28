@@ -1,7 +1,10 @@
 # bb-plugin-attention
 
 A "Needs attention" section for the bb homepage / new-thread screen: the top
-10 threads that want you, ranked most urgent first.
+10 threads that want you, ranked most urgent first. This MPIV fork adds durable
+dismissal for individual attention occurrences.
+
+Upstream: [slogsdon/bb-plugin-attention](https://github.com/slogsdon/bb-plugin-attention).
 
 ## Screenshots
 
@@ -37,17 +40,37 @@ homepage sections in plugin-id order).
 - **CLI** — `bb attention list [--project <projectId>]` prints the same
   ranked list.
 
+## Permanent dismissals
+
+Enable the feature switch:
+
+```sh
+bb plugin config attention set permanentDismissalsEnabled true
+bb plugin reload attention
+```
+
+Each New Thread row then has a **Dismiss** control. Dismissal is stored by
+thread, attention kind, and occurrence timestamp. The same occurrence stays
+hidden after page reloads and bb restarts. A later error, interaction, or
+unread turn on that thread appears again.
+
 ## Install
 
 ```sh
-bb plugin install https://github.com/slogsdon/bb-plugin-attention
+bb plugin install https://github.com/mpiv-ai/bb-plugin-attention
 # or, from a checkout:
 bb plugin install path:path/to/bb-plugin-attention
 ```
 
 Once installed, the homepage section appears automatically on the
 homepage / new-thread screen; `bb attention list [--project <projectId>]`
-is available as a CLI. No configuration is required.
+is available as a CLI. Permanent dismissals are off until enabled.
+
+## Removal
+
+Set `permanentDismissalsEnabled` to `false` to stop filtering and remove the
+Dismiss controls. Reinstall the upstream package to remove this fork. Its
+dismissal table is additive and ignored by upstream releases.
 
 ## Development
 
