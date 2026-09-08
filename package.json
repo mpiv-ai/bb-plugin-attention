@@ -79,6 +79,9 @@
   "files": [
     "dist",
     "server.ts",
-    "app.tsx"
+    "app.tsx",
+    "inbox-server.ts",
+    "inbox-app.tsx",
+    "app.css"
   ]
 }

@@ -14,6 +14,7 @@ import {
 } from "@get-bb/plugin-sdk/app";
 import type { rpcContract } from "./server";
 import "./app.css";
+import { InboxPanel, InboxCount } from "./inbox-app";
 
 type Contract = typeof rpcContract;
 type AttentionItem = {
@@ -188,6 +189,7 @@ function AttentionHome({ projectId }: { projectId: string | null }) {
 // Section id "attention" sorts before "daily-ops", so this renders above the
 // daily ops homepage section (the client renders sections in plugin-id order).
 export default definePluginApp((app) => {
+  app.slots.navPanel({ id: "inbox", title: "Inbox", icon: "Inbox", path: "inbox", component: InboxPanel, experimental_sidebarAccessory: InboxCount });
   app.slots.homepageSection({
     id: "attention",
     title: "Needs attention",

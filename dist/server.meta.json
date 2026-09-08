@@ -1,11 +1,11 @@
 {
   "sdkMajor": 0,
-  "sdkVersion": "0.4.21",
+  "sdkVersion": "0.4.47",
   "artifactFormatVersion": 1,
   "pluginId": "attention",
   "pluginVersion": "0.2.0",
   "builtWith": {
-    "bbVersion": "0.40.0",
-    "pluginSdkVersion": "0.4.21"
+    "bbVersion": "0.42.1",
+    "pluginSdkVersion": "0.4.47"
   }
 }

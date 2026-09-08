@@ -9,6 +9,7 @@
 // the daily ops homepage section (client renders sections in plugin-id order).
 import { defineRpcContract, type BbPluginApi, type PluginThreadEventPayloads } from "@get-bb/plugin-sdk";
 import { z } from "zod";
+import { registerInbox } from "./inbox-server";
 
 const attentionItem = z.object({
   threadId: z.string(),
@@ -99,16 +100,20 @@ function interactionMeta(interaction: Interaction): {
   };
 }
 
-async function buildSnapshot(
+export async function buildSnapshot(
   bb: BbPluginApi,
   projectId: string | null,
   isDismissed: (item: AttentionItem) => boolean = () => false,
+  full = false,
 ): Promise<z.output<(typeof rpcContract)["attention"]["output"]>> {
-  const threads = await bb.sdk.threads.list({
-    projectId: projectId ?? undefined,
-    archived: false,
-    limit: 500,
-  });
+  const threads: ThreadDto[] = [];
+  let offset = 0;
+  do {
+    const page = await bb.sdk.threads.list({ projectId: projectId ?? undefined, archived: false, limit: 500, offset });
+    threads.push(...page);
+    if (!full || page.length < 500) break;
+    offset += page.length;
+  } while (true);
 
   const items: AttentionItem[] = [];
   for (const thread of threads) {
@@ -145,7 +150,7 @@ async function buildSnapshot(
       thread.latestAttentionAt > (thread.lastReadAt ?? 0)
     ) {
       kind = "unread";
-      label = "Turn finished — reply needed";
+      label = "Unread completed turn";
     }
 
     if (kind === null) continue;
@@ -169,7 +174,7 @@ async function buildSnapshot(
   );
 
   return {
-    items: items.slice(0, MAX_ITEMS),
+    items: full ? items : items.slice(0, MAX_ITEMS),
     total: items.length,
     generatedAt: Date.now(),
   };
@@ -194,6 +199,12 @@ export default async function plugin(bb: BbPluginApi) {
       dismissed_at INTEGER NOT NULL,
       PRIMARY KEY (thread_id, kind)
     )`,
+    `CREATE TABLE inbox_messages (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      project_id TEXT NOT NULL, thread_id TEXT NOT NULL, body TEXT NOT NULL,
+      severity TEXT NOT NULL, created_at INTEGER NOT NULL,
+      read_at INTEGER, archived_at INTEGER
+    ); CREATE INDEX inbox_messages_scope ON inbox_messages(project_id, archived_at, created_at);`,
   ]);
   const findDismissal = database.prepare(
     `SELECT attention_at AS attentionAt
@@ -208,7 +219,7 @@ export default async function plugin(bb: BbPluginApi) {
        dismissed_at = excluded.dismissed_at`,
   );
 
-  const getSnapshot = async (projectId: string | null) => {
+  const getSnapshot = async (projectId: string | null, full = false) => {
     const { permanentDismissalsEnabled } = await settings.get();
     return buildSnapshot(
       bb,
@@ -221,8 +232,11 @@ export default async function plugin(bb: BbPluginApi) {
             return row?.attentionAt === item.attentionAt;
           }
         : undefined,
+      full,
     );
   };
+
+  registerInbox(bb, (projectId) => getSnapshot(projectId, true));
 
   bb.rpc.register(rpcContract, {
     attention: ({ projectId }) => getSnapshot(projectId),
@@ -256,8 +270,7 @@ export default async function plugin(bb: BbPluginApi) {
         event: "thread:changed",
         callback: (event) => {
           if (
-            event.id &&
-            event.changes.includes("interactions-changed")
+            event.id
           ) {
             bb.realtime.publish("attention-changed", {
               threadId: event.id,
