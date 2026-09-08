@@ -11,7 +11,7 @@ var __export = (target, all) => {
 };
 
 // server.ts
-import { defineRpcContract } from "@get-bb/plugin-sdk";
+import { defineRpcContract as defineRpcContract2 } from "@get-bb/plugin-sdk";
 
 // node_modules/zod/v4/classic/external.js
 var external_exports = {};
@@ -1199,14 +1199,14 @@ function prefixIssues(path, issues) {
     return iss;
   });
 }
-function unwrapMessage(message) {
-  return typeof message === "string" ? message : message?.message;
+function unwrapMessage(message2) {
+  return typeof message2 === "string" ? message2 : message2?.message;
 }
 function finalizeIssue(iss, ctx, config2) {
-  const message = iss.message ? iss.message : unwrapMessage(iss.inst?._zod.def?.error?.(iss)) ?? unwrapMessage(ctx?.error?.(iss)) ?? unwrapMessage(config2.customError?.(iss)) ?? unwrapMessage(config2.localeError?.(iss)) ?? "Invalid input";
+  const message2 = iss.message ? iss.message : unwrapMessage(iss.inst?._zod.def?.error?.(iss)) ?? unwrapMessage(ctx?.error?.(iss)) ?? unwrapMessage(config2.customError?.(iss)) ?? unwrapMessage(config2.localeError?.(iss)) ?? "Invalid input";
   const { inst: _inst, continue: _continue, input: _input, ...rest } = iss;
   rest.path ?? (rest.path = []);
-  rest.message = message;
+  rest.message = message2;
   if (ctx?.reportInput) {
     rest.input = _input;
   }
@@ -14527,6 +14527,66 @@ function date4(params) {
 // node_modules/zod/v4/classic/external.js
 config(en_default());
 
+// inbox-server.ts
+import { defineRpcContract } from "@get-bb/plugin-sdk";
+var message = external_exports.object({
+  id: external_exports.number(),
+  projectId: external_exports.string(),
+  threadId: external_exports.string(),
+  text: external_exports.string(),
+  severity: external_exports.enum(["routine", "needs-decision", "urgent"]),
+  createdAt: external_exports.number(),
+  readAt: external_exports.number().nullable(),
+  archivedAt: external_exports.number().nullable()
+});
+var inboxContract = defineRpcContract({
+  inboxMessages: {
+    input: external_exports.object({ projectId: external_exports.string().nullable(), archived: external_exports.boolean(), offset: external_exports.number().int().nonnegative() }).strict(),
+    output: external_exports.object({ messages: external_exports.array(message), total: external_exports.number(), unread: external_exports.number() })
+  },
+  inboxAttention: {
+    input: external_exports.object({ projectId: external_exports.string().nullable() }).strict(),
+    output: external_exports.object({ items: external_exports.array(external_exports.object({ threadId: external_exports.string(), projectId: external_exports.string(), title: external_exports.string(), kind: external_exports.enum(["error", "interaction", "unread"]), label: external_exports.string(), detail: external_exports.string().optional(), attentionAt: external_exports.number(), updatedAt: external_exports.number() })), total: external_exports.number(), generatedAt: external_exports.number() })
+  },
+  inboxMessageState: {
+    input: external_exports.object({ id: external_exports.number().int().positive(), action: external_exports.enum(["read", "archive", "restore"]) }).strict(),
+    output: external_exports.object({ updated: external_exports.boolean() })
+  }
+});
+function registerInbox(bb, snapshot) {
+  const db = bb.storage.database();
+  const changed = () => bb.realtime.publish("attention-changed", {});
+  bb.agents.registerTool({
+    name: "leave_inbox_message",
+    description: "Leave a durable message for the user in the Agent Inbox.",
+    instructions: "Use for a result, decision, or important information the user needs to read. Be concise and include relevant links. Completed turns already appear automatically; do not duplicate routine completion updates. This does not grant approval or replace a pending user interaction.",
+    parameters: external_exports.object({ text: external_exports.string().trim().min(1).max(16e3), severity: external_exports.enum(["routine", "needs-decision", "urgent"]) }).strict(),
+    async execute({ text, severity }, { projectId, threadId }) {
+      const result = db.prepare("INSERT INTO inbox_messages (project_id, thread_id, body, severity, created_at) VALUES (?, ?, ?, ?, ?)").run(projectId, threadId, text, severity, Date.now());
+      changed();
+      return `Stored inbox message #${result.lastInsertRowid}.`;
+    }
+  });
+  bb.rpc.register(inboxContract, {
+    inboxAttention: ({ projectId }) => snapshot(projectId),
+    inboxMessages: ({ projectId, archived, offset }) => {
+      const scope = "(? IS NULL OR project_id = ?)";
+      const where = `${scope} AND archived_at IS ${archived ? "NOT " : ""}NULL`;
+      const messages = db.prepare(`SELECT id, project_id AS projectId, thread_id AS threadId, body AS text, severity, created_at AS createdAt, read_at AS readAt, archived_at AS archivedAt FROM inbox_messages WHERE ${where} ORDER BY created_at DESC, id DESC LIMIT 100 OFFSET ?`).all(projectId, projectId, offset);
+      const { total } = db.prepare(`SELECT COUNT(*) AS total FROM inbox_messages WHERE ${where}`).get(projectId, projectId);
+      const { unread } = db.prepare(`SELECT COUNT(*) AS unread FROM inbox_messages WHERE ${scope} AND read_at IS NULL AND archived_at IS NULL`).get(projectId, projectId);
+      return { messages, total, unread };
+    },
+    inboxMessageState: ({ id, action }) => {
+      const sql = action === "read" ? "read_at = COALESCE(read_at, ?)" : action === "archive" ? "archived_at = ?" : "archived_at = NULL";
+      const statement = db.prepare(`UPDATE inbox_messages SET ${sql} WHERE id = ?`);
+      const result = action === "restore" ? statement.run(id) : statement.run(Date.now(), id);
+      changed();
+      return { updated: result.changes > 0 };
+    }
+  });
+}
+
 // server.ts
 var attentionItem = external_exports.object({
   threadId: external_exports.string(),
@@ -14538,7 +14598,7 @@ var attentionItem = external_exports.object({
   attentionAt: external_exports.number(),
   updatedAt: external_exports.number()
 });
-var rpcContract = defineRpcContract({
+var rpcContract = defineRpcContract2({
   attention: {
     input: external_exports.object({ projectId: external_exports.string().nullable() }).strict(),
     output: external_exports.object({
@@ -14594,12 +14654,15 @@ function interactionMeta(interaction) {
     detail: "toolName" in subject ? subject.toolName ?? void 0 : "tool" in subject ? subject.tool : void 0
   };
 }
-async function buildSnapshot(bb, projectId, isDismissed = () => false) {
-  const threads = await bb.sdk.threads.list({
-    projectId: projectId ?? void 0,
-    archived: false,
-    limit: 500
-  });
+async function buildSnapshot(bb, projectId, isDismissed = () => false, full = false) {
+  const threads = [];
+  let offset = 0;
+  do {
+    const page = await bb.sdk.threads.list({ projectId: projectId ?? void 0, archived: false, limit: 500, offset });
+    threads.push(...page);
+    if (!full || page.length < 500) break;
+    offset += page.length;
+  } while (true);
   const items = [];
   for (const thread of threads) {
     if (thread.visibility !== "visible") continue;
@@ -14628,7 +14691,7 @@ async function buildSnapshot(bb, projectId, isDismissed = () => false) {
       }
     } else if (thread.status === "idle" && thread.latestAttentionAt > (thread.lastReadAt ?? 0)) {
       kind = "unread";
-      label = "Turn finished \u2014 reply needed";
+      label = "Unread completed turn";
     }
     if (kind === null) continue;
     const item = {
@@ -14647,7 +14710,7 @@ async function buildSnapshot(bb, projectId, isDismissed = () => false) {
     (a, b) => RANK[a.kind] - RANK[b.kind] || b.attentionAt - a.attentionAt
   );
   return {
-    items: items.slice(0, MAX_ITEMS),
+    items: full ? items : items.slice(0, MAX_ITEMS),
     total: items.length,
     generatedAt: Date.now()
   };
@@ -14669,7 +14732,13 @@ async function plugin(bb) {
       attention_at INTEGER NOT NULL,
       dismissed_at INTEGER NOT NULL,
       PRIMARY KEY (thread_id, kind)
-    )`
+    )`,
+    `CREATE TABLE inbox_messages (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      project_id TEXT NOT NULL, thread_id TEXT NOT NULL, body TEXT NOT NULL,
+      severity TEXT NOT NULL, created_at INTEGER NOT NULL,
+      read_at INTEGER, archived_at INTEGER
+    ); CREATE INDEX inbox_messages_scope ON inbox_messages(project_id, archived_at, created_at);`
   ]);
   const findDismissal = database.prepare(
     `SELECT attention_at AS attentionAt
@@ -14683,7 +14752,7 @@ async function plugin(bb) {
        attention_at = excluded.attention_at,
        dismissed_at = excluded.dismissed_at`
   );
-  const getSnapshot = async (projectId) => {
+  const getSnapshot = async (projectId, full = false) => {
     const { permanentDismissalsEnabled } = await settings.get();
     return buildSnapshot(
       bb,
@@ -14691,9 +14760,11 @@ async function plugin(bb) {
       permanentDismissalsEnabled ? (item) => {
         const row = findDismissal.get(item.threadId, item.kind);
         return row?.attentionAt === item.attentionAt;
-      } : void 0
+      } : void 0,
+      full
     );
   };
+  registerInbox(bb, (projectId) => getSnapshot(projectId, true));
   bb.rpc.register(rpcContract, {
     attention: ({ projectId }) => getSnapshot(projectId),
     dismiss: async ({ threadId, kind, attentionAt }) => {
@@ -14717,7 +14788,7 @@ async function plugin(bb) {
       const unsubscribe = bb.sdk.subscribe({
         event: "thread:changed",
         callback: (event) => {
-          if (event.id && event.changes.includes("interactions-changed")) {
+          if (event.id) {
             bb.realtime.publish("attention-changed", {
               threadId: event.id
             });
@@ -14768,6 +14839,7 @@ ${snapshot.total} thread${snapshot.total === 1 ? "" : "s"} needing attention; sh
   });
 }
 export {
+  buildSnapshot,
   plugin as default,
   rpcContract
 };

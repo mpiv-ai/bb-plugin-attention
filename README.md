@@ -6,6 +6,35 @@ dismissal for individual attention occurrences.
 
 Upstream: [slogsdon/bb-plugin-attention](https://github.com/slogsdon/bb-plugin-attention).
 
+## Agent Inbox
+
+The Inbox sidebar entry combines threads needing attention with durable messages
+agents explicitly leave using `leave_inbox_message`. It shows all projects by
+default, initially showing Threads needing attention. Project and source filters
+can broaden or narrow the view. The sidebar count is the number of threads
+needing attention, excluding agent messages. The panel scrolls independently.
+
+Dismiss All dismisses attention occurrences and archives messages displayed by
+the current filters and message page. It leaves other projects, pages, and newer
+occurrences alone. Thread dismissal requires Permanent dismissals to be enabled
+in plugin settings. Archived messages retain their Restore action.
+
+The inbox scans thread pages beyond the homepage's ten-row display limit.
+Thread visibility and dismissal rules below still apply. Open a thread to read,
+reply, or handle its approval; reading a message does not approve an action.
+Messages support Mark read, Archive, and Restore, with 100-message pages.
+Messages display as plain text; open the originating thread for rich artifacts.
+No messages are sent to agents by the inbox itself.
+
+Messages live in the existing plugin database in an additive `inbox_messages`
+table. Existing dismissal records are retained. New agent sessions receive the
+message tool. Routine completed turns already appear automatically, so the tool
+instructions discourage duplicate completion messages.
+
+Source checks: `npm run typecheck`, `npm test`, and `npm run build`. If a local
+Node binary shadows the selected runtime, invoke Vitest directly with the Node
+version matching the installed SQLite binding.
+
 ## Screenshots
 
 ![attention](docs/screenshot.png)

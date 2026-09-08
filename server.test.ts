@@ -188,7 +188,7 @@ describe("attention snapshot", () => {
     });
     expect(items[2]).toMatchObject({
       kind: "unread",
-      label: "Turn finished — reply needed",
+      label: "Unread completed turn",
     });
 
     // Active threads are also checked because their summary flag may lag.
@@ -339,7 +339,7 @@ describe("attention snapshot", () => {
     expect(run.stdout).toContain("ERROR");
   });
 
-  it("publishes attention refreshes for interaction lifecycle changes", async () => {
+  it("publishes attention refreshes for status and interaction changes", async () => {
     let onThreadChange:
       | ((event: { id?: string; changes: readonly string[] }) => void)
       | undefined;
@@ -362,6 +362,7 @@ describe("attention snapshot", () => {
     onThreadChange?.({ id: "t_question", changes: ["interactions-changed"] });
 
     expect(harness.inspection.realtimeSignals).toEqual([
+      { channel: "attention-changed", payload: { threadId: "t_question" } },
       {
         channel: "attention-changed",
         payload: { threadId: "t_question" },
@@ -372,4 +373,14 @@ describe("attention snapshot", () => {
     await service.done;
     expect(unsubscribeCalls).toBe(1);
   });
+});
+
+it("includes attention beyond ten and scans additional thread pages in the inbox", async () => {
+  const threads = Array.from({ length: 501 }, (_, i) => listThread({ id: `t_${i}`, title: `Thread ${i}`, titleFallback: null }));
+  const { bb, harness } = createFakePluginHost({ pluginId: "attention", sdk: { threads: { list: async ({ offset = 0, limit = 500 }) => threads.slice(offset, offset + limit) } } });
+  await plugin(bb);
+  const result = await harness.behavior.callRpc("inboxAttention", { projectId: null }) as { items: unknown[]; total: number };
+  expect(result.items).toHaveLength(501);
+  expect(result.total).toBe(501);
+  await harness.lifecycle.dispose();
 });
